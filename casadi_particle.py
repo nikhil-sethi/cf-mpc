@@ -36,6 +36,7 @@ F = ca.Function('F', [x, u], [x_next, j], ['x0', 'u'], ['x', 'j'])
 
 # Simulate the MPC trajectory
 num_time_steps = 100
+    # print(xi)
 time_points = np.arange(0, num_time_steps+1) * dt
 states_mpc = []
 
@@ -46,71 +47,86 @@ lbg = [0 for _ in range(2*(N))]
 ubg = [0 for _ in range(2*(N))]
 lbx = [-1 for _ in range(3*(N)+2)]
 ubx = [1 for _ in range(3*(N)+2)]
+
+
+opti = ca.Opti()
+objective = 0
+
+Xk = opti.variable(2, N+1)
+Uk = opti.variable(1, N)
+
+p1 = opti.parameter()
+p2 = opti.parameter()
+
+# opti.subject_to(Xk[1,0] == p2)
+# opti.subject_to(Xk[0,0] == p1)
+
+opti.subject_to(Xk[:,0] == ca.vertcat(p1,p2))
+
+for k in range(N):
+    Fk = F(x0=Xk[:,k], u=Uk[:,k]) # predict next state
+    Xk_pred = Fk['x']
+    objective += Fk['j']
+
+    opti.subject_to(Xk[:,k+1] == Xk_pred)
+    opti.subject_to(opti.bounded(-1, Uk[:,k], 1))
+    opti.subject_to(opti.bounded(-1, Xk[:,k], 1))
+
+p_opts = {"expand":False, "print_time":0}
+s_opts =  {'tol': 1e-4, 'print_level': 0}
+opti.minimize(objective)
+
+opti.solver('ipopt', p_opts,  s_opts)
+# sol = opti.solve()
+# control_opt = sol.value(Uk)[0]
+
+
 start = time.time()
 for i in range(num_time_steps):
 
     ## ========= RAW METHOD: faster but unreadable
 
-    Xk = ca.MX.sym('X0', 2, N+1) # init constraint
-    Uk = ca.MX.sym('X0', 1, N) # controls
+    # Xk = ca.MX.sym('X0', 2, N+1) # init constraint
+    # Uk = ca.MX.sym('X0', 1, N) # controls
 
-    constraints = []
+    # constraints = []
     
-    lbx[:2] = xi[-1].copy()
-    ubx[:2] = xi[-1].copy()
+    # lbx[:2] = xi[-1].copy()
+    # ubx[:2] = xi[-1].copy()
 
-    objective = 0
+    # objective = 0
 
-    for k in range(N):
+    # for k in range(N):
 
-        Fk = F(x0=Xk[:,k], u=Uk[:,k]) # predict next state
-        Xk_pred = Fk['x']
-        # Xk_pred = dynamics(Xk[:,k], Uk[:,k])
-        # objective += cost(Xk[:,k], Uk[:,k])
+    #     Fk = F(x0=Xk[:,k], u=Uk[:,k]) # predict next state
+    #     Xk_pred = Fk['x']
+    #     # Xk_pred = dynamics(Xk[:,k], Uk[:,k])
+    #     # objective += cost(Xk[:,k], Uk[:,k])
 
-        constraints += [Xk[:,k+1] - Xk_pred] # constrain next state to be from the dynamic model
-        objective += Fk['j']
+    #     constraints += [Xk[:,k+1] - Xk_pred] # constrain next state to be from the dynamic model
+    #     objective += Fk['j']
 
-    nlp = {'x': ca.horzcat(ca.reshape(Xk, 1, 2*(N+1)), Uk), 'f': objective, 'g':ca.vertcat(*constraints)}
-    opts = {'ipopt.tol': 1e-4, 'print_time': 0, 'ipopt.print_level': 0}
-    solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
-    sol = solver(lbg=lbg, ubg=ubg, lbx=lbx, ubx=ubx)
-    control_opt = sol['x'][2*(N+1)]
+    # nlp = {'x': ca.horzcat(ca.reshape(Xk, 1, 2*(N+1)), Uk), 'f': objective, 'g':ca.vertcat(*constraints)}
+    # opts = {'ipopt.tol': 1e-4, 'print_time': 0, 'ipopt.print_level': 0}
+    # solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
+    # sol = solver(lbg=lbg, ubg=ubg, lbx=lbx, ubx=ubx)
+    # control_opt = sol['x'][2*(N+1)]
+    # x_opt = ca.reshape(sol['x'][:42], 2, N+1)
+    # xi += [list(x_opt[:,1].full()[:,0])]
 
     ## ==========
 
-
     ## ========= OPTI METHOD: SLOWER but readble
 
-    # opti = ca.Opti()
-    # objective = 0
+    opti.set_value(p1, xi[-1][0])
+    opti.set_value(p2, xi[-1][1])
 
-    # Xk = opti.variable(2, N+1)
-    # Uk = opti.variable(1, N)
+    sol = opti.solve()
+    control_opt = sol.value(Uk)[0]
 
-    # opti.subject_to(Xk[:,0] == xi[-1])
-
-    # for k in range(N):
-    #     Fk = F(x0=Xk[:,k], u=Uk[:,k]) # predict next state
-    #     Xk_pred = Fk['x']
-    #     objective += Fk['j']
-
-    #     opti.subject_to(Xk[:,k+1] == Xk_pred)
-    #     opti.subject_to(opti.bounded(-1, Uk[:,k], 1))
-    #     opti.subject_to(opti.bounded(-1, Xk[:,k], 1))
-
-    # p_opts = {"expand":False, "print_time":0}
-    # s_opts =  {'tol': 1e-4, 'print_level': 0}
-    # opti.minimize(objective)
+    x_opt = sol.value(Xk)
+    xi += list([x_opt[:,1]])
     
-    # opti.solver('ipopt', p_opts,  s_opts)
-    # sol = opti.solve()
-    # control_opt = sol.value(Uk)[0]
-
-    x_opt = ca.reshape(sol['x'][:42], 2, N+1)
-    
-    xi += [list(x_opt[:,1].full()[:,0])]
-
 print(time.time()-start)
 
 # Convert the MPC results to numpy arrays

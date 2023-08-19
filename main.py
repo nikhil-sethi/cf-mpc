@@ -7,19 +7,48 @@ import cvxpy as cp
 import matplotlib.pyplot as plt
 from matplotlib import animation 
 import casadi as ca
+# import keyboard
+import readchar
+import threading
+from acados_template import AcadosModel, AcadosSim, AcadosSimSolver, AcadosOcpSolver, AcadosOcp
 
+
+def create_model(agent):
+    name = "particle_ode"
+    # Create the CasADi symbols for the function definition
+
+    # states
+    x = ca.MX.sym('x', agent.N_STATES)
+
+    # controls
+    u = ca.MX.sym('u', agent.N_ACTIONS)
+
+    # dynamics model
+    xdot = ca.MX.sym('xdot', agent.N_STATES)
+
+    # explicit expression. the actual derivative xdot = f(x,u)
+    f_expl = ca.vertcat(*agent.xdot(x,u))
+    
+    model = AcadosModel()
+    model.x = x
+    model.xdot = xdot
+    
+    # this expression is set to 0 and solved. basically just saying that the explicit expression is just = xdot. extra steps
+    model.f_impl_expr = xdot - f_expl
+    model.f_expl_expr = f_expl
+    model.u = u
+    model.name = name
+    return model
 
 def mag(v):
     return math.sqrt(v[0]**2 + v[1]**2)
 
 class Particle():
-    def __init__(self, init_state) -> None:
-
-        self.dt = 0.25
+    def __init__(self, dt=0.25, init_state = np.array([0,0, 0, 0])) -> None:
         m = 1 # kg
         p0 = [0,0]
         v0 = [0,0]
-
+        self.dt = dt
         self._x = init_state
         self.N_STATES = len(self._x.flatten())
         self.N_ACTIONS = 2
@@ -46,6 +75,10 @@ class Particle():
     def xdot(self, x, u):
         return [x[2], x[3], u[0], u[1]]
 
+    def xdot_scipy(self, t, x, u):
+        return self.xdot(x,u)
+
+
     # Runge-Kutta (RK4) integration method
     def solve_ivp(self, u, x0):
         k1 = self.A @ x0 + self.B @ u
@@ -60,8 +93,9 @@ class Particle():
     def step(self, u):
         
         # self._x = self.state_update(u, self._x)
-        # self._x = scipy.integrate.solve_ivp(fun = self.state_update, t_span = (0,self.dt), y0=self._x, vectorized=True)
-        self._x = self._x + self.dt*np.array(self.xdot(self._x, u))
+        sol = scipy.integrate.solve_ivp(fun = self.xdot_scipy, t_span = (0,self.dt), y0=self._x, vectorized=True, args = (u,))
+        self._x = sol['y'][:,-1]
+        # self._x = self._x + self.dt*np.array(self.xdot(self._x, u))
         # self.housekeeping()
         
         return self.state
@@ -99,16 +133,15 @@ class Ranger(Sensor):
             
     #         self.measurement = mag(pos-)
 
-
 class Crazyflie(Particle):
-    def __init__(self, dt = 0.25) -> None:
+    def __init__(self, dt = 0.015, init_state = np.array([0,0,0,1,0,0,0,0,0,0,0,0,0])) -> None:
     
-        super().__init__(init_state = np.array([0,0,0,1,0,0,0,0,0,0,0,0,0]))
+        super().__init__(dt=dt,init_state = init_state)
     
 
         # parameters: # taken from webots mass tab
         self.g0  = 9.8066     # [m.s^2] accerelation of gravity
-        self.mq  = 0.05      # [kg] total mass (with one marker)
+        self.mq  = 0.033      # [kg] total mass (with one marker)
         
         
         self.Ixx = 3.5e-5   # [kg.m^2] Inertia moment around x-axis
@@ -118,26 +151,12 @@ class Crazyflie(Particle):
         self.Ct  = 3.25e-4    # [N/krpm^2] Thrust coef
         self.dq  = 65e-3      # [m] distance between motors' center
         self.l   = self.dq/2       # [m] distance between motors' center and the axis of rotation
-
-        self.dt = dt
         
         self.N_ACTIONS = 4 # motor speeds
 
-        self.dx = np.zeros(self.N_STATES)
-        
-        # print(self.state)
+        self.dx = np.zeros(self.N_STATES)     
 
-    def step(self, u):
-        # def s_dot_fn(t, x):
-        #     return self.state_update(u,x)
-        
-        # sol = scipy.integrate.solve_ivp(fun=s_dot_fn, t_span=(0,self.dt), y0=self._x)
-        # self._x = sol['y'][:,-1]
-        # print(self._x)
-        self._x = self.state_update(u, self._x)
-        return self.state
-
-    def state_update(self, u, _x):
+    def xdot(self, _x, u):
         
         # x,y,z,q1, q2, q3, q4, vbx, vby, vbz, wx, wy, wz = x
         # a = x[0]
@@ -182,23 +201,22 @@ class Crazyflie(Particle):
         # print(self.dx)
         # x_next = x + self.dx*self.dt
 
-        x += dxq*self.dt
-        y += dyq*self.dt
-        z += dzq*self.dt
-        q1 += dq1*self.dt
-        q2 += dq2*self.dt
-        q3 += dq3*self.dt
-        q4 += dq4*self.dt
-        vbx += dvbx*self.dt
-        vby += dvby*self.dt
-        vbz += dvbz*self.dt
-        wx += dwx*self.dt
-        wy += dwy*self.dt
-        wz += dwz*self.dt
+        # x += dxq*self.dt
+        # y += dyq*self.dt
+        # z += dzq*self.dt
+        # q1 += dq1*self.dt
+        # q2 += dq2*self.dt
+        # q3 += dq3*self.dt
+        # q4 += dq4*self.dt
+        # vbx += dvbx*self.dt
+        # vby += dvby*self.dt
+        # vbz += dvbz*self.dt
+        # wx += dwx*self.dt
+        # wy += dwy*self.dt
+        # wz += dwz*self.dt
         
         # print(x_next)
-        return [x,y,z,q1,q2,q3,q4,vbx,vby,vbz,wx,wy,wz]
-
+        return [dxq,dyq,dzq,dq1,dq2,dq3,dq4,dvbx,dvby,dvbz,dwx,dwy,dwz]
 
 class Controller:
     def __init__(self, agent=None) -> None:
@@ -209,6 +227,7 @@ class Controller:
     def get_action(self, state_c, state_d):
         # action = np.zeros(4)
         action = self.action
+        action = 19.421043305572518*np.ones(self.agent.N_ACTIONS)
         return action
 
 class PIDController(Controller):
@@ -259,6 +278,59 @@ class LQRController(Controller):
         
         return vel 
 
+class KeyController(Controller):
+    def __init__(self, agent=None) -> None:
+        super().__init__(agent)
+        t = threading.Thread(target = self.key_update)
+        t.start()
+        self.key = ""
+        self.hover_action = [19.421043305572518,19.421043305572518,19.421043305572518,19.421043305572518]
+
+    def key_update(self):
+        scaling = 10000000
+        while True:
+            self.key = readchar.readkey()
+            # self.hover_action = [19.44,19.44,19.44,19.44]
+            if self.key == readchar.key.UP:
+                self.hover_action[1] += 0.5/scaling  # Set the linear velocity forward
+                self.hover_action[0] += 0.5/scaling
+                self.hover_action[2] -= 0.5/scaling
+                self.hover_action[3] -= 0.5/scaling
+                print("up")
+            elif self.key == readchar.key.DOWN:
+                self.hover_action[1] -= 0.5/scaling  # Set the linear velocity forward
+                self.hover_action[0] -= 0.5/scaling
+                self.hover_action[2] += 0.5/scaling
+                self.hover_action[3] += 0.5/scaling
+                print("down")
+            elif self.key == readchar.key.LEFT:
+                self.hover_action[1] -= 0.5/scaling  # Set the linear velocity forward
+                self.hover_action[2] -= 0.5/scaling
+                self.hover_action[0] += 0.5/scaling
+                self.hover_action[3] += 0.5/scaling
+                print("left")
+
+            elif self.key == readchar.key.RIGHT:
+                self.hover_action[1] += 0.5/scaling  # Set the linear velocity forward
+                self.hover_action[2] += 0.5/scaling
+                self.hover_action[0] -= 0.5/scaling
+                self.hover_action[3] -= 0.5/scaling
+                print("right")
+        # elif key == b'a':
+        #     cmd_vel.angular.z = 0.5  # Set the angular velocity left
+        # elif key == b'd':
+        #     cmd_vel.angular.z = -0.5  #
+        
+            self.key=""
+
+            time.sleep(0.1)
+            self.hover_action = [19.421043305572518,19.421043305572518,19.421043305572518,19.421043305572518]
+
+    def get_action(self, state_c, state_d):
+        
+        print(self.hover_action)
+        return self.hover_action
+
 class MPCController(Controller):
     def __init__(self, agent) -> None:
         self.n = 20 # horizon
@@ -268,22 +340,49 @@ class MPCController(Controller):
         self.us = []
         self.x_init = agent.state.flatten()
         
-        self.Q = 0.5*ca.DM(np.diag([1,1]))  # State cost matrix
-        self.R = 0.5*ca.DM(np.diag([1,1])  ) # Control cost matrix
+        self.Q = 10*ca.DM(np.eye(3))  # State cost matrix
+        self.R = 0.02*ca.DM(np.eye(self.agent.N_ACTIONS))  # Control cost matrix
 
         super().__init__(agent)
 
-        # preset constraint vectors
+        self.n_state_vars = self.agent.N_STATES*(self.n+1)
+        self.n_act_vars = self.agent.N_ACTIONS*self.n 
+        n_constraints = self.agent.N_STATES*self.n
+
+        # Preform bounds to save computation
+
         # bounds on the constraints. lbg = ubg means these are equality constraints. Basically used for  
-        self.lbg = [0 for _ in range(self.agent.N_STATES*self.n)]
-        self.ubg = [0 for _ in range(self.agent.N_STATES*self.n)]
+        self.lbg = [0 for _ in range(n_constraints)]
+        self.ubg = [0 for _ in range(n_constraints)]
         
+        u_min = 0
+        u_max = 22
+
         # Bounds on the states. Here, the controls, positions and velocities are all bounded between -1,1. This is kinda forced but it speeds up the MPC
-        self.lbx = [-1 for _ in range((self.agent.N_STATES+self.agent.N_ACTIONS)*self.n + self.agent.N_STATES)]
-        self.ubx = [1 for _ in range((self.agent.N_STATES+self.agent.N_ACTIONS)*self.n + self.agent.N_STATES)]
+        #     x, y, z, q1, q2, q3, q4, vbx, vby, vbz, wx, wy, wz, u1, u2, u3, u4
+        lb_state = [-20, -20, -20, -1, -1, -1, -1 , -2, -2, -2, 0, 0, 0]
+        ub_state = [20, 20, 20, 1, 1, 1, 1 , 2, 2, 2, ca.inf, ca.inf, ca.inf]
+        
+        lb_action = [u_min, u_min, u_min, u_min]
+        ub_action = [u_max, u_max, u_max, u_max]
+
+        self.lbx = []
+        self.ubx = []
+        for i in range(self.n+1):
+            self.lbx.extend(lb_state)
+            self.ubx.extend(ub_state)
+
+        for i in range(self.n):
+            self.lbx.extend(lb_action)
+            self.ubx.extend(ub_action)
+            
+
+        # self.lbx = [*lb for _ in range((self.agent.N_STATES+self.agent.N_ACTIONS)*self.n + self.agent.N_STATES)]
+        # self.ubx = [1 for _ in range((self.agent.N_STATES+self.agent.N_ACTIONS)*self.n + self.agent.N_STATES)]
 
         # sets up a casadi based function as the model. it is almost always faster than pure python funcitons
         self.model = self.setup_model(agent)
+        self.setup_problem()
 
     def get_action(self, state_c, state_d):
         x = cp.Variable((self.agent.N_STATES, self.n+1))
@@ -314,7 +413,8 @@ class MPCController(Controller):
         return u[np.newaxis,:,0].value
 
     def cost(self, x, u, xt):
-        j = ca.mtimes([(x[:2] - xt[0]).T, self.Q, (x[:2] - xt[0])]) + ca.mtimes([u.T, self.R, u])
+        j = (x[:3] - xt).T @ self.Q @ (x[:3] - xt) + u.T @ self.R @ u
+        # print(j)
         # ((x[0]-0.5)**2) * self.Q + u*self.R*u
         return j
 
@@ -324,13 +424,15 @@ class MPCController(Controller):
         # Create the CasADi symbols for the function definition
         x = ca.MX.sym('x', self.agent.N_STATES)
         u = ca.MX.sym('u', self.agent.N_ACTIONS)
-
+        
         x_next = x + self.agent.dt * ca.vertcat(*agent.xdot(x,u))
+        print(x_next)
         model = ca.Function('F', [x, u], [x_next], ['x0', 'u'], ['x'])
 
         return model
 
     def get_action_casadi(self, state_c, state_d):
+        start = time.time()
         # RAW METHOD: faster but not readable, 0.021s onn average for 2nd degree particle sim
         Xk = ca.MX.sym('X0', self.agent.N_STATES, self.n+1) # agent state
         Uk = ca.MX.sym('Uk', self.agent.N_ACTIONS, self.n) # agent controls
@@ -360,49 +462,67 @@ class MPCController(Controller):
         opts = {'ipopt.tol': 1e-4, 'print_time': 0, 'ipopt.print_level': 0}
         solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
         sol = solver(lbg=self.lbg, ubg=self.ubg, lbx=self.lbx, ubx=self.ubx)
-
-        action = sol['x'][self.agent.N_STATES * (self.n+1):self.agent.N_STATES * (self.n+1) + self.agent.N_ACTIONS] # get only the first control action
-
-        self.x_opt = ca.reshape(sol['x'][:self.agent.N_STATES*(self.n + 1)], self.agent.N_STATES, self.n+1)
+        
+        action = sol['x'][self.n_state_vars:self.n_state_vars + self.agent.N_ACTIONS] # get only the first control action
+        print(action)
+        self.x_opt = ca.reshape(sol['x'][:self.n_state_vars], self.agent.N_STATES, self.n+1)
     
         self.x_init = list(self.x_opt[:,1].full()[:,0])
-        
+        # print(self.x_init)
+        print(time.time()-start)
         return action.full()[0]
 
+    def setup_problem(self):
+        self.opti = ca.Opti()
+        objective = 0
+        
+        self.Xk = self.opti.variable(self.agent.N_STATES, self.n+1)
+        self.Uk = self.opti.variable(self.agent.N_ACTIONS, self.n)
+
+        self.x0 = [self.opti.parameter() for _ in range(self.agent.N_STATES)]
+        self.xt = [self.opti.parameter() for _ in range(3)]
+
+        self.opti.subject_to(self.Xk[:,0] == ca.vertcat(*self.x0))
+
+        for k in range(self.n):
+            Fk = self.model(x0=self.Xk[:,k], u=self.Uk[:,k]) # predict next state
+            Xk_pred = Fk['x']
+            # objective += Fk['j']
+            objective += self.cost(self.Xk[:,k], self.Uk[:,k], ca.vertcat(*self.xt))
+            
+            self.opti.subject_to(self.Xk[:,k+1] == Xk_pred)
+            # self.opti.subject_to(self.opti.bounded(-1, self.Uk[:,k], 1))
+            # self.opti.subject_to(self.opti.bounded(-1, self.Xk[:,k], 1))
+
+            self.opti.subject_to(self.opti.bounded(0, self.Uk[:,k], 30))
+            self.opti.subject_to(self.opti.bounded(-10, self.Xk[:3,k], 10))  # position constraint
+            # self.opti.subject_to(self.opti.bounded(-1, self.Xk[7:10,k], 1))
+            # self.opti.subject_to(self.Xk[10:,k] >= 0)
+        # print(objective)
+        p_opts = {"expand":False, "print_time":0}
+        s_opts =  {'tol': 1e-4, 'print_level': 0}
+        self.opti.minimize(objective)
+
+        self.opti.solver('ipopt', p_opts,  s_opts)
 
     def get_action_casadi_opti(self, state_c, state_d):
         ## ========= OPTI METHOD: SLOWER but readble,  0.035s onn average for 2nd degree particle sim
         start = time.time()
-        opti = ca.Opti()
-        objective = 0
+        # set initial state
+        for i, x0_i in enumerate(self.agent.state):
+            self.opti.set_value(self.x0[i], x0_i)
 
-        Xk = opti.variable(self.agent.N_STATES, self.n+1)
-        Uk = opti.variable(self.agent.N_ACTIONS, self.n)
-
-        opti.subject_to(Xk[:,0] == self.x_init)
-
-        for k in range(self.n):
-            Fk = self.model(x0=Xk[:,k], u=Uk[:,k]) # predict next state
-            Xk_pred = Fk['x']
-            # objective += Fk['j']
-            objective += self.cost(Xk[:,k], Uk[:,k], state_d)
-
-            opti.subject_to(Xk[:,k+1] == Xk_pred)
-            opti.subject_to(opti.bounded(-1, Uk[:,k], 1))
-            opti.subject_to(opti.bounded(-1, Xk[:,k], 1))
-
-        p_opts = {"expand":False, "print_time":0}
-        s_opts =  {'tol': 1e-4, 'print_level': 0}
-        opti.minimize(objective)
+        # set objective setpoint
+        for i, xt_i in enumerate(state_d[0]):
+            self.opti.set_value(self.xt[i], xt_i)
         
-        opti.solver('ipopt', p_opts,  s_opts)
-        sol = opti.solve()
+        sol = self.opti.solve()
 
-        control_opt = sol.value(Uk)[:,0]
-
-        self.x_init = sol.value(Xk)[:,1]
-
-        # print(time.time()-start)
+        control_opt = sol.value(self.Uk)[:,0]
+        print(control_opt)
+        # self.x_init = sol.value(self.Xk)[:,1]
+        # print(self.x_init)
+        print(time.time()-start)
 
         return control_opt
 
@@ -411,12 +531,97 @@ class MPCController(Controller):
         for i in range(self.n):
             self.xs.append(self.agent.step())
 
+class MPCControllerAcados(Controller):
+    def __init__(self, agent=None) -> None:
+        super().__init__(agent)
+
+        ocp = AcadosOcp()
+        model = create_model(agent)
+        ocp.model = model
+
+        nx = ocp.model.x.size()[0]
+        nu = ocp.model.u.size()[0]
+        N = 50
+        Tf = self.agent.dt*N
+        
+        # weight matrices
+        Q_mat = 100*np.diag([50, 50, 5000, 1e-3, 1e-3, 1e-3, 1e-3, 5, 5, 10, 1e-5, 1e-5, 10])
+        # Q_mat = 1*np.diag([120, 100, 100, 1e-3, 1e-3, 1e-3, 1e-3, 0.7, 1, 4, 1e-5, 1e-5, 10])
+        R_mat = 0.01*np.diag([1e-2, 1e-2, 1e-2, 1e-2])
+
+        setpoint = np.array([0, 0, 10, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+        self.x0 = np.array([0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        u0 = np.array([0, 0, 0, 0])
+
+        # set simulation time
+
+        ocp.dims.N = N
+        # set options
+        ocp.solver_options.integrator_type = 'ERK'
+        ocp.solver_options.num_stages = 4 # RK4 integration
+        ocp.solver_options.num_steps = 3
+        ocp.solver_options.newton_iter = 3 # for implicit integrator
+        ocp.solver_options.collocation_type = "GAUSS_RADAU_IIA"
+
+
+        ocp.cost.cost_type = 'EXTERNAL'
+        ocp.cost.cost_type_e = 'EXTERNAL'
+        # path cost
+        ocp.model.cost_expr_ext_cost = (model.x-setpoint).T @ Q_mat @ (model.x-setpoint) + model.u.T @ R_mat @ model.u
+        # terminal cost
+        ocp.model.cost_expr_ext_cost_e = (model.x-setpoint).T@ (Q_mat) @ (model.x-setpoint)
+
+        # ocp.model.yref   = np.array([0, 0, 0.5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, agent.hov_w, agent.hov_w, agent.hov_w, agent.hov_w])
+        # ocp.model.yref_e = np.array([0, 0, 0.5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+
+        Fmax = 22
+        Fmin = 0
+        ocp.constraints.lbu = np.array([Fmin, Fmin, Fmin, Fmin])
+        ocp.constraints.ubu = np.array([+Fmax, +Fmax, Fmax, Fmax])
+        ocp.constraints.idxbu = np.array([0, 1, 2, 3])
+
+        # set options
+        ocp.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM' # FULL_CONDENSING_QPOASES
+        # PARTIAL_CONDENSING_HPIPM, FULL_CONDENSING_QPOASES, FULL_CONDENSING_HPIPM,
+        # PARTIAL_CONDENSING_QPDUNES, PARTIAL_CONDENSING_OSQP, FULL_CONDENSING_DAQP
+        ocp.solver_options.hessian_approx = 'GAUSS_NEWTON' # 'GAUSS_NEWTON', 'EXACT'
+        # ocp.solver_options.print_level = 1
+        ocp.solver_options.nlp_solver_type = 'SQP_RTI' # SQP_RTI, SQP
+        ocp.solver_options.print_level = 0 # SQP_RTI, SQP
+        ocp.constraints.x0 = self.x0
+
+        ocp.solver_options.tf = Tf
+
+        self.solver = AcadosOcpSolver(ocp, json_file = 'acados_ocp.json')
+
+    def get_action(self, state_c, state_d):
+        # acados_integrator.set("x", x0)
+        # acados_integrator.set("u", u0)
+
+        start = time.time()
+        self.solver.set(0, "lbx", self.agent.state)
+        self.solver.set(0, "ubx", self.agent.state)
+        
+        status = self.solver.solve()
+        # print(time.time()-start)
+
+        # acados_integrator.solve()
+        
+        # getting the state from a separate integrator rather than the perfect MPC prediction
+        # x0 = acados_integrator.get("x")
+
+        # the perfect MPC predicted state. not sure which one to use.
+        # self.x0 = self.solver.get(1, "x")
+        u0 = self.solver.get(0, "u")
+        print(u0)
+        return u0
 
 class Env():
     def __init__(self, AGENT=Particle, CONTROLLER=MPCController,  gui=True) -> None:
         self.NUM_AGENTS = 1
         
-        self.agents = [AGENT(init_state=np.array([0,0,0,0])) for i in range(self.NUM_AGENTS)]
+        self.agents = [AGENT() for i in range(self.NUM_AGENTS)]
         self.controllers = [CONTROLLER(self.agents[i]) for i in range(self.NUM_AGENTS)]
         self.WIDTH, self.HEIGHT = 1000, 1000
 
@@ -455,10 +660,10 @@ class Env():
     def step(self):
         for i in range(self.NUM_AGENTS):
             
-            control_action = self.controllers[i].get_action_casadi(self.agents[i].state, self.setpoint)
+            control_action = self.controllers[i].get_action(self.agents[i].state, self.setpoint)
 
             state = self.agents[i].step(control_action)  
-            # print(state)              
+            print(state)              
         
     def render(self):
         # Clear the screen
@@ -491,16 +696,19 @@ class Env():
 class DroneEnv(Env):
     def __init__(self, gui=True) -> None:
         
-        super().__init__(CONTROLLER=MPCController, AGENT=Crazyflie, gui=gui)
-        self._x = np.zeros(13)
-        self.setpoint = [0.5,0.5,0.5]
+        super().__init__(CONTROLLER=MPCControllerAcados, AGENT=Crazyflie, gui=gui)
+        # self._x = np.zeros(13)
+        self.setpoint = [[0,5,10]]
         
-        self.anim = animation.FuncAnimation(self.fig, self.ani_update,
-                               frames=200, interval=20, blit=True)
+        self.anim = animation.FuncAnimation(self.fig, self.ani_update, frames=200, interval=35, blit=True)
+        # t = threading.Thread(target=self.run)
+        # t.start()
+        # t.join()
+
     def setup_window(self):
         # First set up the figure, the axis, and the plot element we want to animate
         self.fig = plt.figure()
-        ax = plt.axes(projection='3d', xlim=(-1, 1), ylim=(-1, 1), zlim=(-1, 1))
+        ax = plt.axes(projection='3d', xlim=(-1, 1), ylim=(-1, 1), zlim=(-10, 10))
         self.pos, = ax.plot(0,0,0, 'ro', markersize=8)
         
 
@@ -509,7 +717,7 @@ class DroneEnv(Env):
         # self.pos.set_data(self.agents[0].state[0], self.agents[0].state[1])
         # self.pos.set_3d_properties(np.array([self.agents[0].state[2], np.newaxis]))
         self.step()
-
+        # print(self.agents[0].state[2])
         self.pos.set_data_3d(self.agents[0].state[0], self.agents[0].state[1], self.agents[0].state[2])
         return self.pos,
 
@@ -521,9 +729,10 @@ class DroneEnv(Env):
             self.step()
             # if self.gui:
             #     self.render()
+            time.sleep(0.001)
 
 
 if __name__=="__main__":
-    env = Env(gui = True)
-    env.run()
-    # plt.show()
+    env = DroneEnv(gui = True)
+    # env.run()
+    plt.show()
